@@ -93,24 +93,19 @@ class WeChatHandler:
         if not self.hwnd and not self.find_window():
             return None
 
-        # Bring window to foreground first
-        try:
-            win32gui.SetForegroundWindow(self.hwnd)
-            time.sleep(0.4)
-        except Exception:
-            pass
-
-        # Try Windows Graphics Capture API first (handles GPU-accelerated windows)
+        # WGC captures directly by window name — no need to bring to foreground
         img = _capture_via_wgc(self.window_title)
         if img is not None:
             return img
 
-        # Fallback: pyautogui GDI capture
+        # Fallback: pyautogui GDI capture (requires window to be visible)
         try:
             rect = win32gui.GetWindowRect(self.hwnd)
             x, y, w, h = rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]
             if w <= 0 or h <= 0:
                 return None
+            win32gui.SetForegroundWindow(self.hwnd)
+            time.sleep(0.3)
             return pyautogui.screenshot(region=(x, y, w, h))
         except Exception:
             self.hwnd = None
