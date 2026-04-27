@@ -265,6 +265,7 @@ class App(ctk.CTk):
         image_b64 = WeChatHandler.image_to_base64(screenshot)
 
         result = self.ai_client.analyze_screenshot(image_b64)
+        self._log(f"原始识别: {result}")
         latest_msg = result.get("latest_message", "").strip()
         sender = result.get("sender", "")
         needs_reply = result.get("needs_reply", False)
@@ -276,13 +277,17 @@ class App(ctk.CTk):
         if chat_type == "group" and not at_me:
             return
 
-        if sender == "other" and needs_reply and latest_msg and latest_msg not in self.replied_messages:
-            self.replied_messages.add(latest_msg)
+        # Use a fingerprint for dedup: prefer message text, fall back to sender+timestamp minute
+        msg_key = latest_msg if latest_msg else f"__empty_{time.strftime('%H%M')}"
+
+        if sender == "other" and needs_reply and msg_key not in self.replied_messages:
+            self.replied_messages.add(msg_key)
             if len(self.replied_messages) > 200:
                 self.replied_messages.pop()
             self._log("生成回复中...")
             reply = self.ai_client.generate_reply(
-                latest_msg, self.config_data.get("system_prompt", "")
+                latest_msg or "（对方发来了一条消息，请给出友好回复）",
+                self.config_data.get("system_prompt", "")
             )
             self._log(f"回复: {reply}")
             ok = self.wechat.send_message(reply)
