@@ -104,14 +104,18 @@ class AIClient:
         }
         """
         prompt = (
-            "仔细阅读这张微信聊天截图，提取聊天记录并以JSON格式返回，不要输出任何其他内容：\n"
+            "仔细阅读这张微信聊天截图中的所有文字气泡，提取完整对话记录，以JSON格式返回，不要输出任何其他内容：\n"
             '{"history":[{"sender":"other","text":"消息内容"},{"sender":"self","text":"消息内容"}],'
             '"needs_reply":true,"chat_type":"private","at_me":false}\n'
             "规则：\n"
-            "- history: 按时间顺序列出截图中所有可见消息，左侧气泡 sender=other，右侧气泡 sender=self\n"
-            '- needs_reply: 最新一条是 other 发的且需要回复则为 true\n'
-            '- chat_type: "private" 或 "group"\n'
-            "- at_me: 群聊中最新消息是否@了我"
+            "- history: 按时间顺序列出截图中所有可见的聊天气泡文字\n"
+            "  - 气泡在左侧或带有对方头像 → sender=other\n"
+            "  - 气泡在右侧或带有自己头像 → sender=self\n"
+            "  - 如果只有一条消息也要列出\n"
+            "- needs_reply: 最新一条消息是 other 发的则为 true，否则为 false\n"
+            '- chat_type: 窗口顶部有群名或多个头像则为 "group"，否则为 "private"\n'
+            "- at_me: 群聊中最新消息是否包含@我\n"
+            "注意：即使图片模糊也要尽力识别，history 不能为空数组（除非截图中完全没有任何聊天气泡）"
         )
 
         def _do_call():

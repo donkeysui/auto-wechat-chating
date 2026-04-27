@@ -2,8 +2,11 @@ import json
 import os
 import threading
 import time
+import io
+import base64
 
 import customtkinter as ctk
+from PIL import Image, ImageTk
 
 from ai_client import AIClient
 from wechat_handler import WeChatHandler
@@ -16,7 +19,7 @@ class App(ctk.CTk):
         super().__init__()
         self.title("微信自动回复助手")
         self.geometry("640x740")
-        self.resizable(False, False)
+        self.resizable(True, False)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
@@ -25,6 +28,11 @@ class App(ctk.CTk):
         self.replied_messages: set[str] = set()
         self.ai_client: AIClient | None = None
         self.wechat = WeChatHandler(self.config_data.get("wechat_window_title", "微信"))
+
+        # Preview window state
+        self._preview_win = None
+        self._preview_label = None
+        self._preview_img_ref = None  # keep reference to avoid GC
 
         self._build_ui()
 
@@ -47,21 +55,87 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        ctk.CTkLabel(self, text="微信自动回复助手",
-                     font=("Microsoft YaHei", 20, "bold")).pack(pady=(15, 8))
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=20, pady=(15, 0))
+
+        ctk.CTkLabel(header, text="微信自动回复助手",
+                     font=("Microsoft YaHei", 20, "bold")).pack(side="left")
+
+        self.preview_btn = ctk.CTkButton(
+            header, text="截图预览 ▶", width=110,
+            fg_color="#37474f", hover_color="#546e7a",
+            command=self._toggle_preview
+        )
+        self.preview_btn.pack(side="right")
 
         self.tabs = ctk.CTkTabview(self, width=600, height=600)
-        self.tabs.pack(padx=20, fill="both", expand=True)
+        self.tabs.pack(padx=20, pady=8, fill="both", expand=True)
         self.tabs.add("主页")
         self.tabs.add("设置")
 
         self._build_home_tab(self.tabs.tab("主页"))
         self._build_settings_tab(self.tabs.tab("设置"))
 
+    # ---- Preview window ----
+
+    def _toggle_preview(self):
+        if self._preview_win and self._preview_win.winfo_exists():
+            self._preview_win.destroy()
+            self._preview_win = None
+            self.preview_btn.configure(text="截图预览 ▶")
+        else:
+            self._open_preview()
+            self.preview_btn.configure(text="截图预览 ✕")
+
+    def _open_preview(self):
+        win = ctk.CTkToplevel(self)
+        win.title("最新截图")
+        win.geometry("420x680")
+        win.resizable(True, True)
+        win.protocol("WM_DELETE_WINDOW", self._toggle_preview)
+
+        # Position to the right of main window
+        self.update_idletasks()
+        x = self.winfo_x() + self.winfo_width() + 8
+        y = self.winfo_y()
+        win.geometry(f"+{x}+{y}")
+
+        ctk.CTkLabel(win, text="最新截图", font=("Microsoft YaHei", 13, "bold")).pack(pady=(10, 4))
+        self.preview_ts_label = ctk.CTkLabel(win, text="等待截图...", text_color="gray",
+                                              font=("Consolas", 10))
+        self.preview_ts_label.pack()
+
+        frame = ctk.CTkScrollableFrame(win)
+        frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+        self._preview_label = ctk.CTkLabel(frame, text="")
+        self._preview_label.pack()
+
+        self._preview_win = win
+
+    def _update_preview(self, screenshot: Image.Image):
+        """Update the preview window with a new screenshot (call from main thread via after())."""
+        if not self._preview_win or not self._preview_win.winfo_exists():
+            return
+        if not self._preview_label:
+            return
+
+        # Scale to fit preview width
+        max_w = 400
+        w, h = screenshot.size
+        scale = min(max_w / w, 1.0)
+        new_size = (int(w * scale), int(h * scale))
+        img = screenshot.resize(new_size, Image.LANCZOS)
+
+        self._preview_img_ref = ImageTk.PhotoImage(img)
+        self._preview_label.configure(image=self._preview_img_ref, text="")
+        self.preview_ts_label.configure(
+            text=f"更新于 {time.strftime('%H:%M:%S')}  ({w}×{h})"
+        )
+
     # ---- Home Tab ----
 
     def _build_home_tab(self, parent):
-        # Basic options
         opt_frame = ctk.CTkFrame(parent)
         opt_frame.pack(fill="x", pady=(8, 4))
 
@@ -75,7 +149,6 @@ class App(ctk.CTk):
         self.wechat_title_entry.insert(0, self.config_data.get("wechat_window_title", "微信"))
         self.wechat_title_entry.grid(row=1, column=1, padx=12, pady=8, sticky="w")
 
-        # System prompt
         ctk.CTkLabel(parent, text="系统提示词:", anchor="w").pack(fill="x", padx=4, pady=(6, 2))
         self.prompt_box = ctk.CTkTextbox(parent, height=80, font=("Microsoft YaHei", 12))
         self.prompt_box.insert("1.0", self.config_data.get(
@@ -83,7 +156,6 @@ class App(ctk.CTk):
         ))
         self.prompt_box.pack(fill="x", padx=4)
 
-        # Buttons
         btn_frame = ctk.CTkFrame(parent, fg_color="transparent")
         btn_frame.pack(pady=10)
         ctk.CTkButton(btn_frame, text="保存", width=110,
@@ -95,12 +167,10 @@ class App(ctk.CTk):
         )
         self.toggle_btn.pack(side="left", padx=8)
 
-        # Status
         self.status_label = ctk.CTkLabel(parent, text="状态: 未启动",
                                          text_color="gray", font=("Microsoft YaHei", 12))
         self.status_label.pack(pady=(0, 4))
 
-        # Log
         ctk.CTkLabel(parent, text="运行日志:", anchor="w").pack(fill="x", padx=4)
         self.log_box = ctk.CTkTextbox(parent, font=("Consolas", 11))
         self.log_box.pack(fill="both", expand=True, padx=4, pady=(2, 8))
@@ -108,7 +178,6 @@ class App(ctk.CTk):
     # ---- Settings Tab ----
 
     def _build_settings_tab(self, parent):
-        # API Keys section
         keys_frame = ctk.CTkFrame(parent)
         keys_frame.pack(fill="x", pady=(12, 6), padx=4)
 
@@ -116,19 +185,16 @@ class App(ctk.CTk):
                      font=("Microsoft YaHei", 14, "bold")).grid(
             row=0, column=0, columnspan=2, padx=12, pady=(10, 6), sticky="w")
 
-        ctk.CTkLabel(keys_frame, text="Qwen API Key:").grid(
-            row=1, column=0, padx=12, pady=8, sticky="w")
+        ctk.CTkLabel(keys_frame, text="Qwen API Key:").grid(row=1, column=0, padx=12, pady=8, sticky="w")
         self.qwen_key_entry = ctk.CTkEntry(keys_frame, width=340, show="*")
         self.qwen_key_entry.insert(0, self.config_data.get("qwen_api_key", ""))
         self.qwen_key_entry.grid(row=1, column=1, padx=12, pady=8)
 
-        ctk.CTkLabel(keys_frame, text="Deepseek API Key:").grid(
-            row=2, column=0, padx=12, pady=8, sticky="w")
+        ctk.CTkLabel(keys_frame, text="Deepseek API Key:").grid(row=2, column=0, padx=12, pady=8, sticky="w")
         self.deepseek_key_entry = ctk.CTkEntry(keys_frame, width=340, show="*")
         self.deepseek_key_entry.insert(0, self.config_data.get("deepseek_api_key", ""))
         self.deepseek_key_entry.grid(row=2, column=1, padx=12, pady=(8, 12))
 
-        # Vision section
         vision_frame = ctk.CTkFrame(parent)
         vision_frame.pack(fill="x", pady=6, padx=4)
 
@@ -136,21 +202,18 @@ class App(ctk.CTk):
                      font=("Microsoft YaHei", 14, "bold")).grid(
             row=0, column=0, columnspan=2, padx=12, pady=(10, 6), sticky="w")
 
-        ctk.CTkLabel(vision_frame, text="Provider:").grid(
-            row=1, column=0, padx=12, pady=8, sticky="w")
+        ctk.CTkLabel(vision_frame, text="Provider:").grid(row=1, column=0, padx=12, pady=8, sticky="w")
         self.vision_provider = ctk.CTkOptionMenu(
             vision_frame, values=["qwen", "deepseek"], width=160,
             command=self._on_vision_provider_change)
         self.vision_provider.set(self.config_data.get("vision_provider", "qwen"))
         self.vision_provider.grid(row=1, column=1, padx=12, pady=8, sticky="w")
 
-        ctk.CTkLabel(vision_frame, text="模型名:").grid(
-            row=2, column=0, padx=12, pady=8, sticky="w")
+        ctk.CTkLabel(vision_frame, text="模型名:").grid(row=2, column=0, padx=12, pady=8, sticky="w")
         self.vision_model_entry = ctk.CTkEntry(vision_frame, width=260)
         self.vision_model_entry.insert(0, self.config_data.get("vision_model", "qwen-vl-max"))
         self.vision_model_entry.grid(row=2, column=1, padx=12, pady=(8, 12), sticky="w")
 
-        # Chat section
         chat_frame = ctk.CTkFrame(parent)
         chat_frame.pack(fill="x", pady=6, padx=4)
 
@@ -158,25 +221,21 @@ class App(ctk.CTk):
                      font=("Microsoft YaHei", 14, "bold")).grid(
             row=0, column=0, columnspan=2, padx=12, pady=(10, 6), sticky="w")
 
-        ctk.CTkLabel(chat_frame, text="Provider:").grid(
-            row=1, column=0, padx=12, pady=8, sticky="w")
+        ctk.CTkLabel(chat_frame, text="Provider:").grid(row=1, column=0, padx=12, pady=8, sticky="w")
         self.chat_provider = ctk.CTkOptionMenu(
             chat_frame, values=["qwen", "deepseek"], width=160,
             command=self._on_chat_provider_change)
         self.chat_provider.set(self.config_data.get("chat_provider", "qwen"))
         self.chat_provider.grid(row=1, column=1, padx=12, pady=8, sticky="w")
 
-        ctk.CTkLabel(chat_frame, text="模型名:").grid(
-            row=2, column=0, padx=12, pady=8, sticky="w")
+        ctk.CTkLabel(chat_frame, text="模型名:").grid(row=2, column=0, padx=12, pady=8, sticky="w")
         self.chat_model_entry = ctk.CTkEntry(chat_frame, width=260)
         self.chat_model_entry.insert(0, self.config_data.get("chat_model", "qwen-plus"))
         self.chat_model_entry.grid(row=2, column=1, padx=12, pady=(8, 12), sticky="w")
 
-        # Save button
         ctk.CTkButton(parent, text="保存设置", width=140,
                       command=self._save_all).pack(pady=14)
 
-    # Provider change → auto-fill sensible default model name
     def _on_vision_provider_change(self, value: str):
         defaults = {"qwen": "qwen-vl-max", "deepseek": "deepseek-vl2"}
         self.vision_model_entry.delete(0, "end")
@@ -192,22 +251,18 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _save_all(self):
-        # Home tab fields
         try:
             self.config_data["check_interval"] = int(self.interval_entry.get().strip())
         except ValueError:
             pass
         self.config_data["wechat_window_title"] = self.wechat_title_entry.get().strip()
         self.config_data["system_prompt"] = self.prompt_box.get("1.0", "end").strip()
-
-        # Settings tab fields
         self.config_data["qwen_api_key"] = self.qwen_key_entry.get().strip()
         self.config_data["deepseek_api_key"] = self.deepseek_key_entry.get().strip()
         self.config_data["vision_provider"] = self.vision_provider.get()
         self.config_data["vision_model"] = self.vision_model_entry.get().strip()
         self.config_data["chat_provider"] = self.chat_provider.get()
         self.config_data["chat_model"] = self.chat_model_entry.get().strip()
-
         self._save_config()
         self.wechat.window_title = self.config_data.get("wechat_window_title", "微信")
         self._log("配置已保存")
@@ -225,13 +280,9 @@ class App(ctk.CTk):
 
         self._save_all()
 
-        # Validate: the selected provider must have a key
-        for role, provider_key in [
-            ("Vision", "vision_provider"), ("Chat", "chat_provider")
-        ]:
+        for role, provider_key in [("Vision", "vision_provider"), ("Chat", "chat_provider")]:
             provider = self.config_data.get(provider_key, "qwen")
-            key = self.config_data.get(f"{provider}_api_key", "")
-            if not key:
+            if not self.config_data.get(f"{provider}_api_key", ""):
                 self._log(f"错误: {role} 使用 {provider}，但 {provider} API Key 未填写")
                 self.tabs.set("设置")
                 return
@@ -262,25 +313,26 @@ class App(ctk.CTk):
             return
 
         self._log("截图成功，正在识别...")
-        image_b64 = WeChatHandler.image_to_base64(screenshot)
+        # Update preview (thread-safe via after)
+        self.after(0, self._update_preview, screenshot.copy())
 
+        image_b64 = WeChatHandler.image_to_base64(screenshot)
         result = self.ai_client.analyze_screenshot(image_b64)
         self._log(f"原始识别: {result}")
+
         history = result.get("history", [])
         needs_reply = result.get("needs_reply", False)
         chat_type = result.get("chat_type", "private")
         at_me = result.get("at_me", False)
 
-        # Latest message from other side
         other_msgs = [t for t in history if t.get("sender") == "other"]
         latest_msg = other_msgs[-1].get("text", "").strip() if other_msgs else ""
 
-        self._log(f"识别 [{'group' if chat_type=='group' else 'private'}] needs_reply={needs_reply} 消息数={len(history)}: {latest_msg}")
+        self._log(f"识别 [{chat_type}] needs_reply={needs_reply} 消息数={len(history)}: {latest_msg}")
 
         if chat_type == "group" and not at_me:
             return
 
-        # Dedup key: last other message text + history length
         msg_key = f"{latest_msg}|{len(history)}"
 
         if needs_reply and msg_key not in self.replied_messages:
