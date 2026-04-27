@@ -1,0 +1,11 @@
+{
+  "qwen_api_key": "",
+  "deepseek_api_key": "",
+  "vision_provider": "qwen",
+  "vision_model": "qwen-vl-max",
+  "chat_provider": "qwen",
+  "chat_model": "qwen-plus",
+  "check_interval": 5,
+  "wechat_window_title": "微信",
+  "system_prompt": "你是一个友好的助手，请根据对话内容给出简洁自然的回复，回复要简短自然。"
+}
