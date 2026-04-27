@@ -61,7 +61,7 @@ def _normalize_result(d: dict) -> dict:
     return d
 
 
-
+class AIClient:
     def __init__(self, vision_client: OpenAI, vision_model: str,
                  chat_client: OpenAI, chat_model: str):
         self.vision_client = vision_client
