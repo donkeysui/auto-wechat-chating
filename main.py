@@ -29,10 +29,10 @@ class App(ctk.CTk):
         self.ai_client: AIClient | None = None
         self.wechat = WeChatHandler(self.config_data.get("wechat_window_title", "微信"))
 
-        # Preview window state
-        self._preview_win = None
-        self._preview_label = None
-        self._preview_img_ref = None  # keep reference to avoid GC
+        self._preview_open = False
+        self._preview_img_ref = None
+        self._BASE_W = 640
+        self._PREVIEW_W = 380
 
         self._build_ui()
 
@@ -55,7 +55,16 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        header = ctk.CTkFrame(self, fg_color="transparent")
+        # Outer horizontal container
+        self.outer = ctk.CTkFrame(self, fg_color="transparent")
+        self.outer.pack(fill="both", expand=True)
+
+        # Left: main panel (fixed width)
+        self.main_panel = ctk.CTkFrame(self.outer, fg_color="transparent", width=self._BASE_W)
+        self.main_panel.pack(side="left", fill="both", expand=True)
+        self.main_panel.pack_propagate(False)
+
+        header = ctk.CTkFrame(self.main_panel, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(15, 0))
 
         ctk.CTkLabel(header, text="微信自动回复助手",
@@ -68,7 +77,7 @@ class App(ctk.CTk):
         )
         self.preview_btn.pack(side="right")
 
-        self.tabs = ctk.CTkTabview(self, width=600, height=600)
+        self.tabs = ctk.CTkTabview(self.main_panel, width=600, height=600)
         self.tabs.pack(padx=20, pady=8, fill="both", expand=True)
         self.tabs.add("主页")
         self.tabs.add("设置")
@@ -76,57 +85,42 @@ class App(ctk.CTk):
         self._build_home_tab(self.tabs.tab("主页"))
         self._build_settings_tab(self.tabs.tab("设置"))
 
-    # ---- Preview window ----
+        # Right: preview panel (hidden initially)
+        self.preview_panel = ctk.CTkFrame(self.outer, width=self._PREVIEW_W, fg_color="#1e1e1e")
+        # Not packed yet — shown on demand
 
-    def _toggle_preview(self):
-        if self._preview_win and self._preview_win.winfo_exists():
-            self._preview_win.destroy()
-            self._preview_win = None
-            self.preview_btn.configure(text="截图预览 ▶")
-        else:
-            self._open_preview()
-            self.preview_btn.configure(text="截图预览 ✕")
-
-    def _open_preview(self):
-        win = ctk.CTkToplevel(self)
-        win.title("最新截图")
-        win.geometry("420x680")
-        win.resizable(True, True)
-        win.protocol("WM_DELETE_WINDOW", self._toggle_preview)
-
-        # Position to the right of main window
-        self.update_idletasks()
-        x = self.winfo_x() + self.winfo_width() + 8
-        y = self.winfo_y()
-        win.geometry(f"+{x}+{y}")
-
-        ctk.CTkLabel(win, text="最新截图", font=("Microsoft YaHei", 13, "bold")).pack(pady=(10, 4))
-        self.preview_ts_label = ctk.CTkLabel(win, text="等待截图...", text_color="gray",
-                                              font=("Consolas", 10))
+        ctk.CTkLabel(self.preview_panel, text="截图预览",
+                     font=("Microsoft YaHei", 13, "bold")).pack(pady=(12, 2))
+        self.preview_ts_label = ctk.CTkLabel(self.preview_panel, text="等待截图...",
+                                              text_color="gray", font=("Consolas", 10))
         self.preview_ts_label.pack()
 
-        frame = ctk.CTkScrollableFrame(win)
-        frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        self._preview_label = ctk.CTkLabel(frame, text="")
+        scroll = ctk.CTkScrollableFrame(self.preview_panel)
+        scroll.pack(fill="both", expand=True, padx=8, pady=8)
+        self._preview_label = ctk.CTkLabel(scroll, text="")
         self._preview_label.pack()
 
-        self._preview_win = win
+    # ---- Preview panel toggle ----
+
+    def _toggle_preview(self):
+        if self._preview_open:
+            self.preview_panel.pack_forget()
+            self.geometry(f"{self._BASE_W}x740")
+            self.preview_btn.configure(text="截图预览 ▶")
+            self._preview_open = False
+        else:
+            self.preview_panel.pack(side="left", fill="both", padx=(0, 8), pady=8)
+            self.geometry(f"{self._BASE_W + self._PREVIEW_W + 16}x740")
+            self.preview_btn.configure(text="截图预览 ◀")
+            self._preview_open = True
 
     def _update_preview(self, screenshot: Image.Image):
-        """Update the preview window with a new screenshot (call from main thread via after())."""
-        if not self._preview_win or not self._preview_win.winfo_exists():
+        if not self._preview_open:
             return
-        if not self._preview_label:
-            return
-
-        # Scale to fit preview width
-        max_w = 400
+        max_w = self._PREVIEW_W - 24
         w, h = screenshot.size
         scale = min(max_w / w, 1.0)
-        new_size = (int(w * scale), int(h * scale))
-        img = screenshot.resize(new_size, Image.LANCZOS)
-
+        img = screenshot.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
         self._preview_img_ref = ImageTk.PhotoImage(img)
         self._preview_label.configure(image=self._preview_img_ref, text="")
         self.preview_ts_label.configure(
