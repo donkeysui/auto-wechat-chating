@@ -266,27 +266,30 @@ class App(ctk.CTk):
 
         result = self.ai_client.analyze_screenshot(image_b64)
         self._log(f"原始识别: {result}")
-        latest_msg = result.get("latest_message", "").strip()
-        sender = result.get("sender", "")
+        history = result.get("history", [])
         needs_reply = result.get("needs_reply", False)
         chat_type = result.get("chat_type", "private")
         at_me = result.get("at_me", False)
 
-        self._log(f"识别 [{sender}/{chat_type}] needs_reply={needs_reply}: {latest_msg}")
+        # Latest message from other side
+        other_msgs = [t for t in history if t.get("sender") == "other"]
+        latest_msg = other_msgs[-1].get("text", "").strip() if other_msgs else ""
+
+        self._log(f"识别 [{'group' if chat_type=='group' else 'private'}] needs_reply={needs_reply} 消息数={len(history)}: {latest_msg}")
 
         if chat_type == "group" and not at_me:
             return
 
-        # Use a fingerprint for dedup: prefer message text, fall back to sender+timestamp minute
-        msg_key = latest_msg if latest_msg else f"__empty_{time.strftime('%H%M')}"
+        # Dedup key: last other message text + history length
+        msg_key = f"{latest_msg}|{len(history)}"
 
-        if sender == "other" and needs_reply and msg_key not in self.replied_messages:
+        if needs_reply and msg_key not in self.replied_messages:
             self.replied_messages.add(msg_key)
             if len(self.replied_messages) > 200:
                 self.replied_messages.pop()
             self._log("生成回复中...")
             reply = self.ai_client.generate_reply(
-                latest_msg or "（对方发来了一条消息，请给出友好回复）",
+                history or [{"sender": "other", "text": "你好"}],
                 self.config_data.get("system_prompt", "")
             )
             self._log(f"回复: {reply}")

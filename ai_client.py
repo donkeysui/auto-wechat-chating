@@ -40,23 +40,28 @@ def _extract_json(text: str) -> dict:
 
 
 def _normalize_result(d: dict) -> dict:
-    """Normalize sender/chat_type fields that models sometimes return verbosely."""
-    sender = str(d.get("sender", "")).lower()
-    if "other" in sender or "left" in sender or "左" in sender:
-        d["sender"] = "other"
-    elif "self" in sender or "right" in sender or "右" in sender or "我" in sender:
-        d["sender"] = "self"
-
+    # Normalize chat_type
     chat = str(d.get("chat_type", "")).lower()
-    if "group" in chat or "群" in chat:
-        d["chat_type"] = "group"
-    else:
-        d["chat_type"] = "private"
+    d["chat_type"] = "group" if ("group" in chat or "群" in chat) else "private"
 
-    # needs_reply: accept bool or truthy string
+    # Normalize needs_reply
     nr = d.get("needs_reply", False)
     if isinstance(nr, str):
         d["needs_reply"] = nr.lower() in ("true", "yes", "1", "是")
+
+    # Normalize at_me
+    am = d.get("at_me", False)
+    if isinstance(am, str):
+        d["at_me"] = am.lower() in ("true", "yes", "1", "是")
+
+    # Normalize history entries
+    history = d.get("history", [])
+    for turn in history:
+        s = str(turn.get("sender", "")).lower()
+        if "other" in s or "left" in s or "左" in s:
+            turn["sender"] = "other"
+        else:
+            turn["sender"] = "self"
 
     return d
 
@@ -89,14 +94,24 @@ class AIClient:
         )
 
     def analyze_screenshot(self, image_base64: str) -> dict:
+        """
+        Extract full conversation history from screenshot and determine reply intent.
+        Returns: {
+          "history": [{"sender": "other"|"self", "text": "..."}],
+          "needs_reply": bool,
+          "chat_type": "private"|"group",
+          "at_me": bool
+        }
+        """
         prompt = (
-            "分析这张微信聊天截图，严格按以下JSON格式返回，不要输出任何其他内容：\n"
-            '{"latest_message":"<最新一条消息的文字>","sender":"other","needs_reply":true,"chat_type":"private","at_me":false}\n'
-            "字段规则：\n"
-            '- sender: 只能是 "other"（左侧气泡，对方发的）或 "self"（右侧气泡，自己发的）\n'
-            '- needs_reply: 布尔值 true 或 false\n'
-            '- chat_type: 只能是 "private" 或 "group"\n'
-            '- at_me: 群聊中是否@了我，布尔值'
+            "仔细阅读这张微信聊天截图，提取聊天记录并以JSON格式返回，不要输出任何其他内容：\n"
+            '{"history":[{"sender":"other","text":"消息内容"},{"sender":"self","text":"消息内容"}],'
+            '"needs_reply":true,"chat_type":"private","at_me":false}\n'
+            "规则：\n"
+            "- history: 按时间顺序列出截图中所有可见消息，左侧气泡 sender=other，右侧气泡 sender=self\n"
+            '- needs_reply: 最新一条是 other 发的且需要回复则为 true\n'
+            '- chat_type: "private" 或 "group"\n'
+            "- at_me: 群聊中最新消息是否@了我"
         )
 
         def _do_call():
@@ -110,20 +125,30 @@ class AIClient:
                         {"type": "text", "text": prompt}
                     ]
                 }],
-                max_tokens=400
+                max_tokens=800
             )
 
         response = _call_with_retry(_do_call)
         return _normalize_result(_extract_json(response.choices[0].message.content.strip()))
 
-    def generate_reply(self, message: str, system_prompt: str) -> str:
+    def generate_reply(self, history: list[dict], system_prompt: str) -> str:
+        """Generate a reply given full conversation history."""
+        # Build messages from history
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in history:
+            role = "user" if turn.get("sender") == "other" else "assistant"
+            text = turn.get("text", "").strip()
+            if text:
+                messages.append({"role": role, "content": text})
+
+        # Ensure last message is from user side
+        if not messages or messages[-1]["role"] != "user":
+            messages.append({"role": "user", "content": "请回复"})
+
         def _do_call():
             return self.chat_client.chat.completions.create(
                 model=self.chat_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message}
-                ],
+                messages=messages,
                 max_tokens=300
             )
 
