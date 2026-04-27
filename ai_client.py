@@ -39,7 +39,29 @@ def _extract_json(text: str) -> dict:
             "chat_type": "private", "at_me": False}
 
 
-class AIClient:
+def _normalize_result(d: dict) -> dict:
+    """Normalize sender/chat_type fields that models sometimes return verbosely."""
+    sender = str(d.get("sender", "")).lower()
+    if "other" in sender or "left" in sender or "左" in sender:
+        d["sender"] = "other"
+    elif "self" in sender or "right" in sender or "右" in sender or "我" in sender:
+        d["sender"] = "self"
+
+    chat = str(d.get("chat_type", "")).lower()
+    if "group" in chat or "群" in chat:
+        d["chat_type"] = "group"
+    else:
+        d["chat_type"] = "private"
+
+    # needs_reply: accept bool or truthy string
+    nr = d.get("needs_reply", False)
+    if isinstance(nr, str):
+        d["needs_reply"] = nr.lower() in ("true", "yes", "1", "是")
+
+    return d
+
+
+
     def __init__(self, vision_client: OpenAI, vision_model: str,
                  chat_client: OpenAI, chat_model: str):
         self.vision_client = vision_client
@@ -68,14 +90,13 @@ class AIClient:
 
     def analyze_screenshot(self, image_base64: str) -> dict:
         prompt = (
-            "这是一张微信聊天截图。请分析并严格以JSON格式返回以下字段，不要输出任何其他内容：\n"
-            "{\n"
-            '  "latest_message": "最新一条消息的完整文字内容",\n'
-            '  "sender": "self（右侧气泡）或 other（左侧气泡）",\n'
-            '  "needs_reply": true或false,\n'
-            '  "chat_type": "private（私聊）或 group（群聊）",\n'
-            '  "at_me": true或false（群聊中消息是否包含@我）\n'
-            "}"
+            "分析这张微信聊天截图，严格按以下JSON格式返回，不要输出任何其他内容：\n"
+            '{"latest_message":"<最新一条消息的文字>","sender":"other","needs_reply":true,"chat_type":"private","at_me":false}\n'
+            "字段规则：\n"
+            '- sender: 只能是 "other"（左侧气泡，对方发的）或 "self"（右侧气泡，自己发的）\n'
+            '- needs_reply: 布尔值 true 或 false\n'
+            '- chat_type: 只能是 "private" 或 "group"\n'
+            '- at_me: 群聊中是否@了我，布尔值'
         )
 
         def _do_call():
@@ -93,7 +114,7 @@ class AIClient:
             )
 
         response = _call_with_retry(_do_call)
-        return _extract_json(response.choices[0].message.content.strip())
+        return _normalize_result(_extract_json(response.choices[0].message.content.strip()))
 
     def generate_reply(self, message: str, system_prompt: str) -> str:
         def _do_call():

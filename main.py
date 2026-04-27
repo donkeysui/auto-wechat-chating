@@ -271,7 +271,7 @@ class App(ctk.CTk):
         chat_type = result.get("chat_type", "private")
         at_me = result.get("at_me", False)
 
-        self._log(f"识别 [{sender}/{chat_type}]: {latest_msg}")
+        self._log(f"识别 [{sender}/{chat_type}] needs_reply={needs_reply}: {latest_msg}")
 
         if chat_type == "group" and not at_me:
             return
