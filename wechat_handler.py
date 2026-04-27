@@ -10,22 +10,35 @@ import win32api
 from PIL import Image
 
 
-def _capture_via_wgc(window_title: str) -> Image.Image | None:
+def _capture_via_wgc(hwnd: int) -> Image.Image | None:
     """
-    Capture a window using Windows Graphics Capture API (supports GPU-accelerated apps).
+    Capture a window by HWND using Windows Graphics Capture API.
+    Uses wincam (HWND-based) to avoid title-matching ambiguity.
     Returns a PIL Image or None if unavailable.
     """
+    # Primary: wincam — captures by HWND directly
     try:
-        import numpy as np
+        import wincam
+        cap = wincam.WindowCapture(hwnd)
+        arr = cap.get_latest_frame()
+        if arr is not None:
+            # wincam returns BGRA numpy array
+            return Image.fromarray(arr[:, :, [2, 1, 0]], "RGB")
+    except Exception:
+        pass
+
+    # Fallback: windows-capture — title-based, may match wrong window
+    try:
+        import win32gui as _wg
+        title = _wg.GetWindowText(hwnd)
         from windows_capture import WindowsCapture, InternalCaptureControl
 
         result: list[Image.Image] = []
-
         capture = WindowsCapture(
             cursor_capture=False,
             draw_border=False,
             monitor_index=None,
-            window_name=window_title,
+            window_name=title,
         )
 
         @capture.event
@@ -39,8 +52,7 @@ def _capture_via_wgc(window_title: str) -> Image.Image | None:
         def on_closed():
             pass
 
-        capture.start()  # blocks until stop() is called
-
+        capture.start()
         return result[0] if result else None
     except Exception:
         return None
@@ -93,8 +105,8 @@ class WeChatHandler:
         if not self.hwnd and not self.find_window():
             return None
 
-        # WGC captures directly by window name — no need to bring to foreground
-        img = _capture_via_wgc(self.window_title)
+        # WGC captures by HWND — no title ambiguity, no need to bring to foreground
+        img = _capture_via_wgc(self.hwnd)
         if img is not None:
             return img
 
